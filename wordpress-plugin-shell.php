@@ -3,7 +3,7 @@
  * Plugin Name:       WordPress Plugin Shell
  * Plugin URI:        https://www.level.agency
  * Description:       A shell plugin for WordPress.
- * Version:           1.0.0
+ * Version:           1.1.1
  * Requires at least: 6.3
  * Requires PHP:      8.0
  * License:           MIT
@@ -19,7 +19,7 @@ if (! defined('WPINC'))
 
 class WordPressPluginShell
 {
-  public static $version = '1.0.0';
+  public static $version = '1.1.1';
   private static $handle_namespace = 'lvl:wordpress-plugin-shell';
   private static $instance = null;
   
