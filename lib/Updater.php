@@ -10,19 +10,21 @@ class Updater
   private $plugin_file;
   private $plugin_slug;
   private $version;
-  private $update_server = 'https://wordpress.level-agency.workers.dev';
+  private $update_uri;
+  private $remote_data = null;
 
   public function __construct($plugin_file, $version) 
   {
     $this->plugin_file = $plugin_file;
     $this->plugin_slug = basename($plugin_file, '.php');
+    $this->update_uri = "https://wordpress.level-cdn.com/api/plugin/{$this->plugin_slug}/version/latest";
     $this->version = $version;
 
-    add_filter('pre_set_site_transient_update_plugins', [$this, 'check_for_update']);
-    add_filter('plugins_api', [$this, 'plugin_info'], 20, 3);
+    add_filter('pre_set_site_transient_update_plugins', [$this, 'checkForUpdate']);
+    add_filter('plugins_api', [$this, 'pluginInfo'], 20, 3);
   }
 
-  public function check_for_update($transient) 
+  public function checkForUpdate($transient) 
   {
     if (empty($transient->checked))
       return $transient;
@@ -32,65 +34,113 @@ class Updater
     if (!isset($transient->checked[$plugin_path]))
       return $transient;
 
-    $remote_version = $this->get_remote_version();
+    $remote_data = $this->getRemoteData();
       
-    if (version_compare($this->version, $remote_version, '<')) {
-      $transient->response[$plugin_path] = (object) [
-        'slug' => $this->plugin_slug,
-        'new_version' => $remote_version,
-        'package' => $this->get_download_url(),
-        'url' => ''
-      ];
-    }
+    if (!$remote_data)
+      return $transient;
+
+    $remote_version = $remote_data['wordpress']['new_version'] ?? false;
+
+    if (!$remote_version || !version_compare($this->version, $remote_version, '<'))
+      return $transient;
+
+    $transient->response[$plugin_path] = (object) [
+      'slug' => $this->plugin_slug,
+      'new_version' => $remote_version,
+      'package' => $remote_data['wordpress']['package'] ?? '',
+      'url' => $remote_data['wordpress']['details_url'] ?? '',
+    ];
 
     return $transient;
   }
 
-  private function get_remote_version() 
+  public function pluginInfo($result, $action, $args) 
   {
-    $url = $this->update_server . '?slug=' . $this->plugin_slug . '&version=' . $this->version;
-    $response = wp_remote_get($url);
+    if ($action !== 'plugin_information')
+      return $result;
 
-    error_log(print_r($response, true));
-    
-    if (is_wp_error($response))
-      return false;
+    if (!isset($args->slug) || $args->slug !== $this->plugin_slug)
+      return $result;
 
-    $body = wp_remote_retrieve_body($response);
-    $data = json_decode($body, true);
-    
-    return $data['new_version'] ?? false;
-  }
+    $remote_data = $this->getRemoteData();
 
-  private function get_download_url() 
-  {
-    $url = $this->update_server . '?slug=' . $this->plugin_slug . '&version=' . $this->version;
-    $response = wp_remote_get($url);
-    
-    if (is_wp_error($response))
-      return false;
+    if (!$remote_data)
+      return $result;
 
-    $body = wp_remote_retrieve_body($response);
-    $data = json_decode($body, true);
-    
-    return $data['package'] ?? false;
-  }
+    $version_data = $remote_data['version'] ?? [];
+    $wp_data = $remote_data['wordpress'] ?? [];
 
-  public function plugin_info($false, $action, $response) 
-  {
-    if ($action !== 'plugin_information' || $response->slug !== $this->plugin_slug)
-      return $false;
-
-    // Return plugin information for the details popup
     return (object) [
-      'name' => 'My Plugin Name',
+      'name' => $this->plugin_slug,
       'slug' => $this->plugin_slug,
-      'version' => $this->get_remote_version(),
-      'author' => 'Your Name',
-      'homepage' => 'https://github.com/username/repo',
+      'version' => $wp_data['new_version'] ?? $this->version,
+      'author' => $version_data['author']['login'] ?? '',
+      'author_profile' => $version_data['author']['html_url'] ?? '',
+      'homepage' => $version_data['html_url'] ?? '',
+      'download_link' => $wp_data['package'] ?? '',
+      'trunk' => $wp_data['package'] ?? '',
+      'last_updated' => $version_data['published_at'] ?? '',
       'sections' => [
-        'description' => 'Plugin description here'
-      ]
+        // 'description' => $wp_data['release_notes'] ?? '',
+        'changelog' => $this->formatChangelog($version_data),
+      ],
     ];
+  }
+
+  private function getRemoteData() 
+  {
+    if ($this->remote_data !== null)
+      return $this->remote_data;
+
+    $cache_key = 'lvl_updater_' . $this->plugin_slug;
+    $cached = get_transient($cache_key);
+
+    if ($cached !== false) {
+      $this->remote_data = $cached;
+      return $this->remote_data;
+    }
+
+    $response = wp_remote_get($this->update_uri, [
+      'timeout' => 10,
+      'headers' => [
+        'Accept' => 'application/json',
+      ],
+    ]);
+
+    if (is_wp_error($response)) {
+      error_log('Updater Error: ' . $response->get_error_message());
+      return false;
+    }
+
+    $status_code = wp_remote_retrieve_response_code($response);
+    
+    if ($status_code !== 200) {
+      error_log("Updater Error: HTTP {$status_code} from {$this->update_uri}");
+      return false;
+    }
+
+    $body = wp_remote_retrieve_body($response);
+    $data = json_decode($body, true);
+    
+    if (json_last_error() !== JSON_ERROR_NONE) {
+      error_log('Updater Error: Invalid JSON response');
+      return false;
+    }
+
+    set_transient($cache_key, $data, HOUR_IN_SECONDS * 6);
+    
+    $this->remote_data = $data;
+    return $this->remote_data;
+  }
+
+  private function formatChangelog($version_data) 
+  {
+    if (empty($version_data['body']))
+      return '';
+
+    $changelog = "<h4>{$version_data['tag_name']}</h4>";
+    $changelog .= wpautop($version_data['body']);
+
+    return $changelog;
   }
 }
