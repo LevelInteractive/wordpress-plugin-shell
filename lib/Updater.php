@@ -17,7 +17,7 @@ class Updater
   {
     $this->plugin_file = $plugin_file;
     $this->plugin_slug = basename($plugin_file, '.php');
-    $this->update_uri = "https://wordpress.level-cdn.com/api/plugin/{$this->plugin_slug}/version/latest";
+    $this->update_uri = "https://wordpress.level-cdn.com/api/plugins/{$this->plugin_slug}/versions/latest";
     $this->version = $version;
 
     add_filter('pre_set_site_transient_update_plugins', [$this, 'checkForUpdate']);
